@@ -299,12 +299,6 @@ function loadSpot(): ParkedSpot | null {
   } catch { return null; }
 }
 
-function getPosition(opts?: PositionOptions): Promise<GeolocationPosition> {
-  return new Promise((resolve, reject) =>
-    navigator.geolocation.getCurrentPosition(resolve, reject, opts)
-  );
-}
-
 function getBestPosition(
   { maxWaitMs = 12000, desiredAccuracyM = 25 }: { maxWaitMs?: number; desiredAccuracyM?: number } = {}
 ): Promise<GeolocationPosition> {
