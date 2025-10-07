@@ -103,9 +103,8 @@ export default function App() {
   async function onParkHere() {
     setStatus("Getting a precise location… (walk near a window if indoors)");
     setPhotoUrl((p) => p); // keep photo if already chosen
-
     try {
-      const pos = await getBestPosition({ maxWaitMs: 12000, desiredAccuracyM: 25 });
+      const pos = await getBestPosition({ maxWaitMs: 20000, desiredAccuracyM: 25 });
       saveSpot(pos.coords, { note, photoDataUrl: photoUrl });
       const acc = Math.round(pos.coords.accuracy ?? 0);
       setStatus(acc ? `Saved with ±${acc} m accuracy` : "Saved!");
@@ -131,12 +130,16 @@ export default function App() {
     window.location.href = `https://maps.google.com/?q=${q}&ll=${q}&z=18`;
   }
 
-  function onPhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
+  async function onPhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     if (!f) return;
-    const reader = new FileReader();
-    reader.onload = () => setPhotoUrl(reader.result as string);
-    reader.readAsDataURL(f);
+    try {
+      const smallDataUrl = await compressImage(f); // compress first
+      setPhotoUrl(smallDataUrl);
+    } catch (err) {
+      console.error("Image compression failed", err);
+      setStatus("Failed to process image");
+    }
   }
 
   async function requestNotifyPermission(): Promise<boolean> {
@@ -182,7 +185,75 @@ export default function App() {
     }
   }, [timer.remainingMs, timer.endsAt]);
 
+  function compressImage(file: File, maxW = 800, maxH = 800): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const reader = new FileReader();
+      reader.onload = () => {
+        img.src = reader.result as string;
+      };
+      img.onload = () => {
+        const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+        const w = img.width * scale;
+        const h = img.height * scale;
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d")!;
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", 0.7)); // 0.7 quality JPEG
+      };
+      img.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
 
+  function loadSpot(): ParkedSpot | null {
+    try {
+      const raw = localStorage.getItem(KEY);
+      return raw ? (JSON.parse(raw) as ParkedSpot) : null;
+    } catch { return null; }
+  }
+
+  function getBestPosition(
+    { maxWaitMs = 12000, desiredAccuracyM = 25 }: { maxWaitMs?: number; desiredAccuracyM?: number } = {}
+  ): Promise<GeolocationPosition> {
+    return new Promise((resolve, reject) => {
+      if (!("geolocation" in navigator)) {
+        reject(new Error("Geolocation not supported"));
+        return;
+      }
+
+      let best: GeolocationPosition | null = null;
+      const start = Date.now();
+
+      const id = navigator.geolocation.watchPosition(
+        (pos) => {
+          const acc = pos.coords.accuracy ?? 99999;
+          // keep track of best so far
+          if (!best || acc < (best.coords.accuracy ?? 99999)) best = pos;
+
+          // resolve early if we hit our target
+          if (acc <= desiredAccuracyM) {
+            navigator.geolocation.clearWatch(id);
+            resolve(pos);
+          } else if (Date.now() - start > maxWaitMs) {
+            navigator.geolocation.clearWatch(id);
+            // time's up — return best seen (even if not ideal)
+            resolve(best ?? pos);
+          }
+        },
+        (err) => {
+          navigator.geolocation.clearWatch(id);
+          reject(err);
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 0,       // don't use a cached reading
+          timeout: 15000,
+        }
+      );
+    });
+  }
 
   return (
     <main>
@@ -290,53 +361,5 @@ export default function App() {
       )}
     </main>
   );
-}
-
-function loadSpot(): ParkedSpot | null {
-  try {
-    const raw = localStorage.getItem(KEY);
-    return raw ? (JSON.parse(raw) as ParkedSpot) : null;
-  } catch { return null; }
-}
-
-function getBestPosition(
-  { maxWaitMs = 12000, desiredAccuracyM = 25 }: { maxWaitMs?: number; desiredAccuracyM?: number } = {}
-): Promise<GeolocationPosition> {
-  return new Promise((resolve, reject) => {
-    if (!("geolocation" in navigator)) {
-      reject(new Error("Geolocation not supported"));
-      return;
-    }
-
-    let best: GeolocationPosition | null = null;
-    const start = Date.now();
-
-    const id = navigator.geolocation.watchPosition(
-      (pos) => {
-        const acc = pos.coords.accuracy ?? 99999;
-        // keep track of best so far
-        if (!best || acc < (best.coords.accuracy ?? 99999)) best = pos;
-
-        // resolve early if we hit our target
-        if (acc <= desiredAccuracyM) {
-          navigator.geolocation.clearWatch(id);
-          resolve(pos);
-        } else if (Date.now() - start > maxWaitMs) {
-          navigator.geolocation.clearWatch(id);
-          // time's up — return best seen (even if not ideal)
-          resolve(best ?? pos);
-        }
-      },
-      (err) => {
-        navigator.geolocation.clearWatch(id);
-        reject(err);
-      },
-      {
-        enableHighAccuracy: true,
-        maximumAge: 0,       // don't use a cached reading
-        timeout: 15000,
-      }
-    );
-  });
 }
 
